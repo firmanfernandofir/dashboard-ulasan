@@ -1,11 +1,20 @@
-import pandas as pd
-import re
-from datetime import datetime, timedelta
-from dash import Dash, html, dcc, dash_table
-import plotly.graph_objs as go
+# 📦 Install library yang dibutuhkan di requirements.txt
+# dash==2.14.1
+# pandas==2.2.1
+# plotly==5.19.0
+# gunicorn==23.0.0
 
-# === STEP 1: Load & Parse Dataset ===
+import pandas as pd
+import dash
+from dash import dcc, html, Input, Output, dash_table
+import plotly.express as px
+
+# === 1. Load Data ===
 df = pd.read_csv("data.csv")
+
+# Parsing tanggal relatif
+from datetime import datetime, timedelta
+import re
 
 def parse_relative_date(text):
     text = str(text).lower()
@@ -35,69 +44,85 @@ def parse_relative_date(text):
         return None
     return None
 
+# Pastikan kolom date ada
+df = df.dropna(subset=["date", "snippet"])
 df["parsed_date"] = df["date"].apply(parse_relative_date)
 df = df.dropna(subset=["parsed_date"])
+df["parsed_date"] = pd.to_datetime(df["parsed_date"])
 df["week"] = df["parsed_date"].dt.to_period("W").apply(lambda r: r.start_time)
+df["month"] = df["parsed_date"].dt.to_period("M").astype(str)
+df["year"] = df["parsed_date"].dt.year
 
-# Tambahkan kolom dummy link jika tidak ada
-if "link" not in df.columns:
-    df["link"] = "https://google.com"
+# === 2. Mulai Dash ===
+app = dash.Dash(__name__)
+server = app.server  # Penting untuk Railway
 
-# === STEP 2: Group by Minggu ===
-weekly_summary = df.groupby("week").agg(
-    jumlah_ulasan=("snippet", "count")
-).reset_index()
-
-# === STEP 3: Build Dash App ===
-app = Dash(__name__)
-app.title = "Dashboard Ulasan PDAM Sidoarjo"
-
+# === 3. Layout ===
 app.layout = html.Div([
-    html.H2("📊 Jumlah Ulasan per Minggu"),
-    
-    dcc.Graph(
-        id='ulasan-mingguan',
-        figure={
-            'data': [
-                go.Bar(
-                    x=weekly_summary['week'],
-                    y=weekly_summary['jumlah_ulasan'],
-                    marker_color='lightskyblue',
-                    text=weekly_summary['jumlah_ulasan'],
-                    textposition='outside',
-                    hovertemplate='Tanggal: %{x|%Y-%m-%d}<br>Jumlah Ulasan: %{y}<extra></extra>'
-                )
-            ],
-            'layout': go.Layout(
-                xaxis_title='Minggu',
-                yaxis_title='Jumlah Ulasan',
-                margin=dict(l=40, r=40, t=40, b=40),
-                template='plotly_white'
-            )
-        }
-    ),
+    html.H2("📊 Jumlah Ulasan Mingguan & Bulanan"),
 
-    html.H3("📄 Daftar Ulasan + Link Sumber"),
+    html.Div([
+        dcc.Dropdown(
+            id='filter_tahun',
+            options=[{"label": str(y), "value": y} for y in sorted(df['year'].unique())],
+            value=2025,
+            placeholder="Pilih Tahun"
+        ),
+        dcc.Dropdown(
+            id='filter_bulan',
+            placeholder="Pilih Bulan (opsional)"
+        )
+    ], style={'width': '60%', 'margin': '20px auto'}),
+
+    dcc.Graph(id='grafik_ulasan'),
+
+    html.H4("🗂️ Daftar Ulasan + Link Sumber"),
     dash_table.DataTable(
+        id='tabel_ulasan',
         columns=[
             {"name": "Tanggal", "id": "parsed_date"},
             {"name": "Ulasan", "id": "snippet"},
-            {"name": "Link", "id": "link", "presentation": "markdown"},
+            {"name": "Link", "id": "link", "presentation": "markdown"}
         ],
-        data=[
-            {
-                "parsed_date": row["parsed_date"].strftime("%Y-%m-%d"),
-                "snippet": row["snippet"],
-                "link": f"[Klik Link]({row['link']})"
-            }
-            for _, row in df.sort_values("parsed_date", ascending=False).head(50).iterrows()
-        ],
-        style_cell={'textAlign': 'left', 'whiteSpace': 'normal', 'height': 'auto'},
-        style_table={'overflowX': 'auto', 'maxHeight': '600px', 'overflowY': 'scroll'},
-        markdown_options={"html": True},
-        page_size=10,
+        style_cell={"textAlign": "left", 'whiteSpace': 'normal', 'height': 'auto'},
+        style_table={"overflowX": "auto"},
+        page_size=10
     )
 ])
 
+# === 4. Callback ===
+@app.callback(
+    Output('filter_bulan', 'options'),
+    Output('filter_bulan', 'value'),
+    Input('filter_tahun', 'value')
+)
+def update_bulan_options(tahun):
+    bulan_data = df[df['year'] == tahun]['month'].unique()
+    return ([{"label": b, "value": b} for b in sorted(bulan_data)], None)
+
+@app.callback(
+    Output('grafik_ulasan', 'figure'),
+    Output('tabel_ulasan', 'data'),
+    Input('filter_tahun', 'value'),
+    Input('filter_bulan', 'value')
+)
+def update_visualisasi(tahun, bulan):
+    dff = df[df['year'] == tahun]
+    if bulan:
+        dff = dff[dff['month'] == bulan]
+
+    # Grafik mingguan
+    weekly_counts = dff.groupby('week').size().reset_index(name='Jumlah')
+    fig = px.bar(weekly_counts, x='week', y='Jumlah', title='Jumlah Ulasan per Minggu', opacity=0.6)
+    fig.update_layout(xaxis_title='Minggu', yaxis_title='Jumlah Ulasan')
+
+    # Data tabel dengan link Markdown
+    tabel_data = dff[['parsed_date', 'snippet', 'link']].copy()
+    tabel_data['parsed_date'] = tabel_data['parsed_date'].dt.strftime('%Y-%m-%d')
+    tabel_data['link'] = tabel_data['link'].apply(lambda l: f"[Klik Link]({l})")
+
+    return fig, tabel_data.to_dict('records')
+
+# === 5. Jalankan Server ===
 if __name__ == '__main__':
     app.run_server(debug=True)
