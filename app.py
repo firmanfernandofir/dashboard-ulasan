@@ -1,11 +1,11 @@
 import pandas as pd
 import dash
-from dash import dcc, html, dash_table, Input, Output
+from dash import dcc, html, Input, Output, dash_table
 import plotly.express as px
 from datetime import datetime, timedelta
 import re
 
-# Load CSV
+# === Load Data ===
 df = pd.read_csv("data.csv")
 
 # Parsing tanggal
@@ -37,7 +37,6 @@ def parse_relative_date(text):
         return None
     return None
 
-# Preprocessing
 df = df.dropna(subset=["date", "snippet"])
 df["parsed_date"] = df["date"].apply(parse_relative_date)
 df = df.dropna(subset=["parsed_date"])
@@ -46,9 +45,9 @@ df["week"] = df["parsed_date"].dt.to_period("W").apply(lambda r: r.start_time)
 df["month"] = df["parsed_date"].dt.to_period("M").astype(str)
 df["year"] = df["parsed_date"].dt.year
 
-# Dash App
+# === DASH APP ===
 app = dash.Dash(__name__)
-server = app.server  # ✅ ini penting!
+server = app.server  # ✅ INI WAJIB AGAR GUNICORN BISA MENJALANKAN
 
 app.layout = html.Div([
     html.H2("📊 Jumlah Ulasan Mingguan & Bulanan"),
@@ -56,7 +55,7 @@ app.layout = html.Div([
         dcc.Dropdown(
             id='filter_tahun',
             options=[{"label": str(y), "value": y} for y in sorted(df['year'].unique())],
-            value=2025
+            value=2025,
         ),
         dcc.Dropdown(id='filter_bulan', placeholder="Pilih Bulan")
     ], style={'width': '60%', 'margin': '20px auto'}),
@@ -93,7 +92,6 @@ def update_visualisasi(tahun, bulan):
     dff = df[df['year'] == tahun]
     if bulan:
         dff = dff[dff['month'] == bulan]
-
     weekly_counts = dff.groupby('week').size().reset_index(name='Jumlah')
     fig = px.bar(weekly_counts, x='week', y='Jumlah', title='Jumlah Ulasan per Minggu')
     fig.update_layout(xaxis_title='Minggu', yaxis_title='Jumlah Ulasan')
@@ -101,7 +99,6 @@ def update_visualisasi(tahun, bulan):
     tabel_data = dff[['parsed_date', 'snippet', 'link']].copy()
     tabel_data['parsed_date'] = tabel_data['parsed_date'].dt.strftime('%Y-%m-%d')
     tabel_data['link'] = tabel_data['link'].apply(lambda l: f"[Klik Link]({l})")
-
     return fig, tabel_data.to_dict('records')
 
 if __name__ == '__main__':
