@@ -1,72 +1,74 @@
+from flask import Flask, render_template_string
 import pandas as pd
-import dash
-from dash import dcc, html
 import plotly.express as px
-import os
+from datetime import datetime, timedelta
+import re
 
-# ==== Load data safely ====
-DATA_FILE = 'data.csv'
+app = Flask(__name__)
 
-try:
-    df = pd.read_csv(DATA_FILE, parse_dates=['Tanggal'])
-except Exception as e:
-    raise Exception(f"Gagal membaca '{DATA_FILE}': {e}")
+def relative_date_to_absolute(text):
+    today = datetime.today()
+    if "hari" in text:
+        num = int(re.findall(r'\d+', text)[0])
+        return today - timedelta(days=num)
+    elif "minggu" in text:
+        num = int(re.findall(r'\d+', text)[0])
+        return today - timedelta(weeks=num)
+    elif "bulan" in text:
+        num = int(re.findall(r'\d+', text)[0])
+        return today - timedelta(weeks=4*num)
+    elif "tahun" in text:
+        num = int(re.findall(r'\d+', text)[0])
+        return today - timedelta(weeks=52*num)
+    else:
+        return today
 
-# ==== Validasi kolom ====
-required_columns = {'Tanggal', 'Ulasan'}
-if not required_columns.issubset(df.columns):
-    raise ValueError(f"Kolom yang dibutuhkan tidak ditemukan. Diperlukan: {required_columns}")
+@app.route('/')
+def index():
+    # Load data
+    df = pd.read_csv("data.csv")
+    
+    # Convert relative dates to datetime
+    df['Tanggal'] = df['date'].apply(relative_date_to_absolute)
+    df['Tanggal'] = pd.to_datetime(df['Tanggal'])
+    df['Week'] = df['Tanggal'].dt.to_period("W").dt.start_time
 
-# ==== Prakondisi waktu ====
-df['Tahun'] = df['Tanggal'].dt.year
-df['Bulan'] = df['Tanggal'].dt.month
-df['Tanggal Format'] = df['Tanggal'].dt.strftime('%Y-%m-%d')
+    # Prepare hover text
+    df['hover'] = (
+        "Tanggal: " + df['Tanggal'].dt.strftime('%d-%m-%Y') +
+        "<br>Ulasan: " + df['snippet'].str.slice(0, 100) + "..." +
+        "<br><a href='" + df['link'] + "' target='_blank'>Klik untuk sumber</a>"
+    )
 
-# ==== Inisialisasi App Dash ====
-app = dash.Dash(__name__)
-server = app.server  # penting untuk deployment ke Railway
+    # Group by week
+    df_grouped = df.groupby('Week').agg({
+        'snippet': 'count',
+        'hover': lambda x: '<br><br>'.join(x)
+    }).reset_index().rename(columns={'snippet': 'JumlahUlasan'})
 
-# ==== Layout ====
-app.layout = html.Div([
-    html.H1('Dashboard Ulasan Scraping', style={'textAlign': 'center'}),
+    # Plotly bar chart
+    fig = px.bar(df_grouped, x='Week', y='JumlahUlasan', hover_data={'hover': True, 'JumlahUlasan': False})
+    fig.update_traces(hovertemplate='%{customdata[0]}<extra></extra>')
+    fig.update_layout(
+        title="Jumlah Ulasan Per Minggu",
+        xaxis_title="Minggu",
+        yaxis_title="Jumlah Ulasan",
+        hoverlabel=dict(align="left")
+    )
 
-    dcc.Dropdown(
-        id='dropdown-tahun',
-        options=[{'label': str(t), 'value': t} for t in sorted(df['Tahun'].unique())],
-        value=sorted(df['Tahun'].unique())[0],
-        clearable=False,
-        style={'width': '50%', 'margin': 'auto'}
-    ),
+    chart_html = fig.to_html(full_html=False)
 
-    dcc.Graph(id='grafik-ulas'),
+    return render_template_string("""
+    <html>
+    <head>
+        <title>Visualisasi Ulasan PDAM</title>
+    </head>
+    <body>
+        <h2>Grafik Interaktif Jumlah Ulasan</h2>
+        {{ plot | safe }}
+    </body>
+    </html>
+    """, plot=chart_html)
 
-    html.H2('Daftar Ulasan'),
-    html.Div(id='tabel-ulas')
-])
-
-# ==== Callback grafik ====
-@app.callback(
-    dash.dependencies.Output('grafik-ulas', 'figure'),
-    dash.dependencies.Input('dropdown-tahun', 'value')
-)
-def update_grafik(tahun):
-    dff = df[df['Tahun'] == tahun]
-    data_per_bulan = dff.groupby('Bulan').size().reset_index(name='Jumlah Ulasan')
-    fig = px.bar(data_per_bulan, x='Bulan', y='Jumlah Ulasan', title=f'Ulasan per Bulan - {tahun}')
-    return fig
-
-# ==== Callback ulasan ====
-@app.callback(
-    dash.dependencies.Output('tabel-ulas', 'children'),
-    dash.dependencies.Input('dropdown-tahun', 'value')
-)
-def tampilkan_ulasan(tahun):
-    dff = df[df['Tahun'] == tahun]
-    return html.Ul([
-        html.Li(f"{row['Tanggal Format']}: {row['Ulasan']}")
-        for i, row in dff.iterrows()
-    ])
-
-# ==== Jalankan lokal ====
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run(debug=True)
