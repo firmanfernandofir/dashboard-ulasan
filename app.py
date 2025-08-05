@@ -1,21 +1,14 @@
-# 📦 Install library yang dibutuhkan di requirements.txt
-# dash==2.14.1
-# pandas==2.2.1
-# plotly==5.19.0
-# gunicorn==23.0.0
-
 import pandas as pd
 import dash
-from dash import dcc, html, Input, Output, dash_table
+from dash import dcc, html, dash_table, Input, Output
 import plotly.express as px
-
-# === 1. Load Data ===
-df = pd.read_csv("data.csv")
-
-# Parsing tanggal relatif
 from datetime import datetime, timedelta
 import re
 
+# Load CSV
+df = pd.read_csv("data.csv")
+
+# Parsing tanggal
 def parse_relative_date(text):
     text = str(text).lower()
     today = datetime.today()
@@ -44,7 +37,7 @@ def parse_relative_date(text):
         return None
     return None
 
-# Pastikan kolom date ada
+# Preprocessing
 df = df.dropna(subset=["date", "snippet"])
 df["parsed_date"] = df["date"].apply(parse_relative_date)
 df = df.dropna(subset=["parsed_date"])
@@ -53,29 +46,21 @@ df["week"] = df["parsed_date"].dt.to_period("W").apply(lambda r: r.start_time)
 df["month"] = df["parsed_date"].dt.to_period("M").astype(str)
 df["year"] = df["parsed_date"].dt.year
 
-# === 2. Mulai Dash ===
+# Dash App
 app = dash.Dash(__name__)
-server = app.server  # Penting untuk Railway
+server = app.server  # ✅ ini penting!
 
-# === 3. Layout ===
 app.layout = html.Div([
     html.H2("📊 Jumlah Ulasan Mingguan & Bulanan"),
-
     html.Div([
         dcc.Dropdown(
             id='filter_tahun',
             options=[{"label": str(y), "value": y} for y in sorted(df['year'].unique())],
-            value=2025,
-            placeholder="Pilih Tahun"
+            value=2025
         ),
-        dcc.Dropdown(
-            id='filter_bulan',
-            placeholder="Pilih Bulan (opsional)"
-        )
+        dcc.Dropdown(id='filter_bulan', placeholder="Pilih Bulan")
     ], style={'width': '60%', 'margin': '20px auto'}),
-
     dcc.Graph(id='grafik_ulasan'),
-
     html.H4("🗂️ Daftar Ulasan + Link Sumber"),
     dash_table.DataTable(
         id='tabel_ulasan',
@@ -85,12 +70,10 @@ app.layout = html.Div([
             {"name": "Link", "id": "link", "presentation": "markdown"}
         ],
         style_cell={"textAlign": "left", 'whiteSpace': 'normal', 'height': 'auto'},
-        style_table={"overflowX": "auto"},
         page_size=10
     )
 ])
 
-# === 4. Callback ===
 @app.callback(
     Output('filter_bulan', 'options'),
     Output('filter_bulan', 'value'),
@@ -111,18 +94,15 @@ def update_visualisasi(tahun, bulan):
     if bulan:
         dff = dff[dff['month'] == bulan]
 
-    # Grafik mingguan
     weekly_counts = dff.groupby('week').size().reset_index(name='Jumlah')
-    fig = px.bar(weekly_counts, x='week', y='Jumlah', title='Jumlah Ulasan per Minggu', opacity=0.6)
+    fig = px.bar(weekly_counts, x='week', y='Jumlah', title='Jumlah Ulasan per Minggu')
     fig.update_layout(xaxis_title='Minggu', yaxis_title='Jumlah Ulasan')
 
-    # Data tabel dengan link Markdown
     tabel_data = dff[['parsed_date', 'snippet', 'link']].copy()
     tabel_data['parsed_date'] = tabel_data['parsed_date'].dt.strftime('%Y-%m-%d')
     tabel_data['link'] = tabel_data['link'].apply(lambda l: f"[Klik Link]({l})")
 
     return fig, tabel_data.to_dict('records')
 
-# === 5. Jalankan Server ===
 if __name__ == '__main__':
     app.run_server(debug=True)
